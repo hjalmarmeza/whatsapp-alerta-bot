@@ -1,5 +1,5 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode');
+const qrcode = require('qrcode-terminal');
 const express = require('express');
 const cors = require('cors');
 
@@ -23,14 +23,12 @@ const client = new Client({
     }
 });
 
-// Cuando se genera un código QR
-client.on('qr', async (qr) => {
+// Cuando se genera un código QR (Se imprime en la consola de Render)
+client.on('qr', (qr) => {
     console.log('----------------------------------------------------');
     console.log('🚨 NUEVO CÓDIGO QR 🚨');
     console.log('Escanea este código con tu teléfono (NUEVA VINCULACIÓN)');
-    const imagePath = __dirname + '/qr_code.png';
-    await qrcode.toFile(imagePath, qr);
-    console.log('✅ Imagen del QR guardada en: ' + imagePath);
+    qrcode.generate(qr, { small: true });
     console.log('----------------------------------------------------');
 });
 
