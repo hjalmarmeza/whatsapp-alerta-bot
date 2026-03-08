@@ -1,5 +1,5 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode');
 const express = require('express');
 const cors = require('cors');
 
@@ -23,12 +23,14 @@ const client = new Client({
     }
 });
 
-// Cuando se genera un código QR (Se imprime en la consola de Render)
-client.on('qr', (qr) => {
+// Cuando se genera un código QR (Se guarda en imagen y se sirve por web)
+client.on('qr', async (qr) => {
     console.log('----------------------------------------------------');
     console.log('🚨 NUEVO CÓDIGO QR 🚨');
-    console.log('Escanea este código con tu teléfono (NUEVA VINCULACIÓN)');
-    qrcode.generate(qr, { small: true });
+    console.log('Entra desde tu navegador a: http://34.28.206.25:3000/qr');
+    const imagePath = __dirname + '/qr_code.png';
+    await qrcode.toFile(imagePath, qr);
+    console.log('✅ Imagen lista para escanear en la URL de arriba');
     console.log('----------------------------------------------------');
 });
 
@@ -97,6 +99,14 @@ app.post('/alerta', async (req, res) => {
  */
 app.get('/ping', (req, res) => {
     res.send('pong');
+});
+
+/**
+ * RUTA 4: Ver el Código QR
+ * (Para que puedas escanearlo grandote en el navegador)
+ */
+app.get('/qr', (req, res) => {
+    res.sendFile(__dirname + '/qr_code.png');
 });
 
 // Iniciamos todo (Render asignará un PORT dinámicamente)
