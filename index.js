@@ -22,7 +22,8 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
-        logger: pino({ level: 'silent' })
+        logger: pino({ level: 'silent' }),
+        browser: ['Alerta Vecinal', 'Chrome', '1.0.0']
     });
 
     sock.ev.on('creds.update', saveCreds);
