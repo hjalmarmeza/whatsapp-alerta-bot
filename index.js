@@ -1,71 +1,69 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode');
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configuramos WhatsApp Web con auto-guardado de sesión y menos consumo de recursos (Render)
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
-        ]
-    }
-});
+let sock;
+const AUTH_DIR = 'auth_info_baileys';
 
-// Cuando se genera un código QR (Se guarda en imagen y se sirve por web)
-client.on('qr', async (qr) => {
-    console.log('----------------------------------------------------');
-    console.log('🚨 NUEVO CÓDIGO QR 🚨');
-    console.log('Entra desde tu navegador a: http://34.28.206.25:3000/qr');
-    const imagePath = __dirname + '/qr_code.png';
-    await qrcode.toFile(imagePath, qr);
-    console.log('✅ Imagen lista para escanear en la URL de arriba');
-    console.log('----------------------------------------------------');
-});
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-// Cuando la conexión es exitosa
-client.on('ready', () => {
-    console.log('✅ El Bot de WhatsApp está conectado y listo.');
-    console.log('Para ver tus grupos, ve a: http://localhost:3000/grupos');
-});
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' })
+    });
 
-// Responder a un comando simple de prueba dentro de WhatsApp
-client.on('message', async msg => {
-    if (msg.body === '!ping') {
-        msg.reply('¡Pong! El bot está vivo 😉');
-    }
-});
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('----------------------------------------------------');
+            console.log('🚨 NUEVO CÓDIGO QR 🚨');
+            console.log('Entra a: http://34.28.206.25:3000/qr');
+            const imagePath = __dirname + '/qr_code.png';
+            await qrcode.toFile(imagePath, qr);
+            console.log('----------------------------------------------------');
+        }
+
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Conexión cerrada debido a:', lastDisconnect.error, ', reconectando:', shouldReconnect);
+            if (shouldReconnect) connectToWhatsApp();
+        } else if (connection === 'open') {
+            console.log('✅ El Bot (Baileys) está conectado y listo.');
+            console.log('Para ver tus grupos, ve a: http://localhost:3000/grupos');
+        }
+    });
+}
 
 /**
- * RUTA 1: Obtener la lista de grupos 
- * (Usaremos esto para conseguir el ID secreto de "🚨 Alertas Vecindario")
+ * RUTA 1: Obtener la lista de grupos
  */
 app.get('/grupos', async (req, res) => {
     try {
-        const chats = await client.getChats();
+        if (!sock) return res.status(500).json({ error: 'WhatsApp no inicializado' });
 
-        // Filtramos para obtener solo grupos
-        const groups = chats.filter(chat => chat.isGroup);
-
-        // Extraemos nombre y el ID
-        const groupInfo = groups.map(group => ({
-            name: group.name,
-            id: group.id._serialized
+        const chats = await sock.groupFetchAllParticipating();
+        const groups = Object.values(chats).map(g => ({
+            name: g.subject,
+            id: g.id
         }));
 
-        res.json({ totalGrupos: groups.length, grupos: groupInfo });
+        res.json({ totalGrupos: groups.length, grupos: groups });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Error al obtener los grupos' });
@@ -73,53 +71,41 @@ app.get('/grupos', async (req, res) => {
 });
 
 /**
- * RUTA 2: Enviar alerta a un grupo específico
- * (El Frontend de tu app web llamará a esta ruta al presionar el botón)
+ * RUTA 2: Enviar alerta
  */
 app.post('/alerta', async (req, res) => {
     const { groupId, mensaje } = req.body;
 
     if (!groupId || !mensaje) {
-        return res.status(400).json({ error: 'Faltan parámetros: groupId o mensaje' });
+        return res.status(400).json({ error: 'Faltan parámetros' });
     }
 
     try {
-        console.log(`⏳ Intentando enviar mensaje a: ${groupId}...`);
-
-        // Usamos una forma más robusta de enviar
-        const chat = await client.getChatById(groupId);
-        await chat.sendMessage(mensaje);
-
-        console.log(`🚨 Alerta enviada correctamente al grupo: ${groupId}`);
-        res.json({ success: true, mensaje: 'Alerta enviada y entregada a WhatsApp' });
+        await sock.sendMessage(groupId, { text: mensaje });
+        console.log(`🚨 Alerta enviada a: ${groupId}`);
+        res.json({ success: true, mensaje: 'Alerta enviada' });
     } catch (error) {
-        console.error('Error enviando la alerta:', error);
-        res.status(500).json({ error: 'Error enviando la alerta. ¿Revisaste el groupId?' });
+        console.error('Error enviando alerta:', error);
+        res.status(500).json({ error: 'Error enviando alerta' });
     }
 });
 
 /**
- * RUTA 3: El "Ping" anti-dormir
- * (Cron-job llamará a esta ruta cada 10 min para mantener a Render despierto)
- */
-app.get('/ping', (req, res) => {
-    res.send('pong');
-});
-
-/**
- * RUTA 4: Ver el Código QR
- * (Para que puedas escanearlo grandote en el navegador)
+ * RUTA 3: QR Viewer
  */
 app.get('/qr', (req, res) => {
-    res.sendFile(__dirname + '/qr_code.png');
+    const imagePath = __dirname + '/qr_code.png';
+    if (fs.existsSync(imagePath)) {
+        res.sendFile(imagePath);
+    } else {
+        res.send('QR no generado aún. Espera unos segundos...');
+    }
 });
 
-// Iniciamos todo (Render asignará un PORT dinámicamente)
+app.get('/ping', (req, res) => res.send('pong'));
+
 const PORT = process.env.PORT || 3000;
-
-client.initialize();
-
 app.listen(PORT, () => {
-    console.log(`🌐 Servidor de Alertas Vecinales corriendo en http://localhost:${PORT}`);
-    console.log(`⌛ Esperando a que inicie WhatsApp...`);
+    console.log(`🌐 Servidor en puerto ${PORT}`);
+    connectToWhatsApp();
 });
